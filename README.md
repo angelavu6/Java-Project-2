@@ -1,4 +1,4 @@
-# Java-Project-2
+# C-Project-2
 ## Project Overview
 
 This project simulates a virtual memory system for a computer with RAM and virtual memory. The simulation includes processes, page tables, and memory management, focusing on page loading, eviction, and Least Recently Used (LRU) page replacement. The program reads input data from a file, simulates the loading of pages into RAM, and outputs the state of the system to an output file.
