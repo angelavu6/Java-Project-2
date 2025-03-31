@@ -1,0 +1,201 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#define RAM_SIZE 16 // The RAM consists of 16 slots
+#define VIRTUAL_MEMORY_SIZE 32 // Virtual memory consists of 32 slots
+#define PAGE_SIZE 2 // Each page consists of 2 contiguous locations in RAM or virtual memory
+#define NUM_PROCESSES 4 // The number of processes in the system
+#define PAGES_PER_PROCESS 4 // Each process has 4 pages
+#define FRAMES 8 // The number of frames available in RAM
+#define DISK 99 // Indicates that a page is in the virtual memory (disk)
+
+// This is a page strucure to store process ID, page number, and last accessed time
+typedef struct {
+    int process_id; // The ID of the process
+    int page_num; // The page number of the process
+    int last_accessed; // The last time this page was accessed
+} Page;
+
+// Global variables for RAM, virtual memory, and process page tables
+Page* ram[RAM_SIZE]; // Array of pointers to Page structures (RAM)
+Page* virtual_memory[VIRTUAL_MEMORY_SIZE]; // Array of pointers to Page structures (Virtual Memory)
+int page_table[NUM_PROCESSES][PAGES_PER_PROCESS]; // Page tables for each process
+
+int time_step = 0; // Global variable to track the time step
+
+// Function prototypes
+void initialize_memory();
+void load_page(int process_id, int page_num);
+void evict_page(int process_id, int page_num);
+void print_page_tables(FILE *out);
+void print_ram(FILE *out);
+
+// This is the main function
+int main(int argc, char *argv[]) {
+    // Check if the correct number of arguments are provided
+    if (argc != 3) {
+        printf("Usage: %s in.txt out.txt\n", argv[0]); // Remind that we need the input and output file
+        return 1;
+    }
+
+    // Open the input file for reading and the output file for writing
+    FILE *in_file = fopen(argv[1], "r");
+    FILE *out_file = fopen(argv[2], "w");
+    if (!in_file || !out_file) { 
+        printf("There is an error opening file.\n");
+        return 1;
+    }
+
+    initialize_memory(); // Initialize virtual memory and RAM before the simulation starts
+
+    int process_id; // Variable to store the process ID read from the input file
+    int track_last_accessed_page[NUM_PROCESSES] = {0}; // Track the last accessed page for each process
+    
+    // Read process IDs from the input file until the end of file
+    while (fscanf(in_file, "%d", &process_id) == 1) {
+        int page_num = -1; // Initialize page number to an invalid value 
+        int last_page_num = track_last_accessed_page[process_id]; // Get the last accessed page for the process
+        
+        // Loop through the pages of the process to find a page in virtual memory
+        for (int i = 0; i < PAGES_PER_PROCESS; i++) {
+            int current_page_num = (last_page_num + i) % PAGES_PER_PROCESS; // Check pages in a circular cycle
+            if (page_table[process_id][current_page_num] == DISK) { // If the page is in virtual memory (disk)
+                page_num = current_page_num; // Set the page number to bring into RAM
+                break;
+            }
+        }
+
+        // If a valid page number is found, load the page into RAM
+        if (page_num != -1) {
+            load_page(process_id, page_num); // Load the page into RAM
+            track_last_accessed_page[process_id] = page_num; // Update the last accessed page for the process
+        }
+        time_step++; // Increment the time step for each process request
+    }
+
+    print_page_tables(out_file); // Print the page tables to the output file
+    print_ram(out_file); // Print the RAM content to the output file
+    
+    // Close the input and output files
+    fclose(in_file);
+    fclose(out_file);
+    return 0;
+}
+
+// Initialize the virtual memory with all 4 pages of each process and reset the RAM
+void initialize_memory() {
+    for (int i = 0; i < VIRTUAL_MEMORY_SIZE; i++) {
+        // Initialize virtual memory with pages for each process
+        virtual_memory[i] = (Page*) malloc(sizeof(Page)); // Allocate memory for each page
+        virtual_memory[i]->process_id = i / (PAGES_PER_PROCESS * PAGE_SIZE); // Assign process ID based on position
+        virtual_memory[i]->page_num = (i / PAGE_SIZE) % PAGES_PER_PROCESS; // Assign page number based on position
+        virtual_memory[i]->last_accessed = 0; // Initialize last accessed time to 0
+    }
+
+    // Set all RAM slots to NULL (empty)
+    for (int i = 0; i < RAM_SIZE; i++) {
+        ram[i] = NULL;
+    }
+
+    // Initialize all page tables to indicate pages are on the disk (virtual memory)
+    for (int i = 0; i < NUM_PROCESSES; i++) {
+        for (int j = 0; j < PAGES_PER_PROCESS; j++) {
+            page_table[i][j] = DISK; // Set all pages to be initially on disk
+        }
+    }
+}
+
+// Load a page from virtual memory to RAM, evicting a page if necessary using LRU
+void load_page(int process_id, int page_num) {
+    int frame = -1; // Variable to track the frame to load the page into
+    int lru_time = time_step + 1; // Variable to track the least recently used page
+
+    // Check if there's a free frame in RAM
+    for (int i = 0; i < RAM_SIZE; i += PAGE_SIZE) {
+        if (ram[i] == NULL) { // If a free frame is found
+            frame = i / PAGE_SIZE; // Assign the frame index
+            break;
+        }
+    }
+
+    // If no free frame, use LRU to evict a page
+    if (frame == -1) {
+        // First, attempt local LRU (within the same process)
+        for (int i = 0; i < RAM_SIZE; i += PAGE_SIZE) {
+            if (ram[i]->process_id == process_id && ram[i]->last_accessed < lru_time) {
+                frame = i / PAGE_SIZE; // Assign the least recently used frame
+                lru_time = ram[i]->last_accessed; // Update the least recently used time
+            }
+        }
+
+        // If no page from the same process is in RAM, use global LRU
+        if (frame == -1) {
+            for (int i = 0; i < RAM_SIZE; i += PAGE_SIZE) {
+                if (ram[i]->last_accessed < lru_time) {
+                    frame = i / PAGE_SIZE; // Assign the globally least recently used frame
+                    lru_time = ram[i]->last_accessed; // Update the least recently used time
+                }
+            }
+        }
+
+        // Evict the least recently used page
+        evict_page(ram[frame * PAGE_SIZE]->process_id, ram[frame * PAGE_SIZE]->page_num);
+    }
+
+    // Load the new page into the selected frame
+    ram[frame * PAGE_SIZE] = virtual_memory[(process_id * PAGES_PER_PROCESS + page_num) * PAGE_SIZE]; // First part of the page
+    ram[frame * PAGE_SIZE + 1] = virtual_memory[(process_id * PAGES_PER_PROCESS + page_num) * PAGE_SIZE + 1]; // Second part of the page
+    ram[frame * PAGE_SIZE]->last_accessed = time_step; // Update last accessed time for the first part
+    ram[frame * PAGE_SIZE + 1]->last_accessed = time_step; // Update last accessed time for the second part
+
+    // Update the process's page table
+    page_table[process_id][page_num] = frame; // Set the page to be in the RAM frame
+}
+
+// Evict a page from RAM back to virtual memory
+void evict_page(int process_id, int page_num) {
+    int frame = page_table[process_id][page_num]; // Find the frame where the page is stored
+
+    // Move the evicted page back to virtual memory
+    virtual_memory[(process_id * PAGES_PER_PROCESS + page_num) * PAGE_SIZE] = ram[frame * PAGE_SIZE]; // First part of the page
+    virtual_memory[(process_id * PAGES_PER_PROCESS + page_num) * PAGE_SIZE + 1] = ram[frame * PAGE_SIZE + 1]; // Second part of the page
+
+    // Free the RAM frame
+    ram[frame * PAGE_SIZE] = NULL; // First part of the frame
+    ram[frame * PAGE_SIZE + 1] = NULL; // Second part of the frame
+
+    // Update the page table to indicate the page is back in virtual memory
+    page_table[process_id][page_num] = DISK;
+}
+
+// Print the page tables of all processes to the output file
+void print_page_tables(FILE *out) {
+    for (int i = 0; i < NUM_PROCESSES; i++) {
+        for (int j = 0; j < PAGES_PER_PROCESS; j++) {
+            fprintf(out, "%d", page_table[i][j]); // Print the frame number or DISK for each page
+            if (j < PAGES_PER_PROCESS - 1) {
+                fprintf(out, ", "); // Separate entries with commas
+            }
+        }
+        fprintf(out, "\n");
+    }
+}
+
+// Print the content of the RAM
+void print_ram(FILE *out) {
+    // Loop through RAM in increments of PAGE_SIZE as pages are contiguous
+    for (int i = 0; i < RAM_SIZE; i += PAGE_SIZE) {
+        // Check if both parts of the page (i and i+1) are valid (not NULL)
+        if (ram[i] != NULL && ram[i + 1] != NULL) {
+            // Print process ID, page number, and last accessed time for both parts of the page
+            fprintf(out, "%d,%d,%d; ", ram[i]->process_id, ram[i]->page_num, ram[i]->last_accessed);
+            fprintf(out, "%d,%d,%d; ", ram[i + 1]->process_id, ram[i + 1]->page_num, ram[i + 1]->last_accessed);
+        } else {
+            // If one or both parts of the page are NULL, print NULL
+            fprintf(out, "NULL; NULL; ");
+        }
+    }
+    // Print a new line after all RAM slots are printed
+    fprintf(out, "\n");
+}
